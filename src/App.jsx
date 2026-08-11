@@ -56,6 +56,8 @@ const PAGES = {
 
 const DEFAULT_USER = { id: 'guest', username: 'Guest', role: 'user' };
 const DEFAULT_SETTINGS = { sensorIp: '', cameraIp: '' };
+const CAMERA_RELAY_ENABLED = import.meta.env.DEV && typeof __SMART_DALA_CAMERA_RELAY_ENABLED__ !== 'undefined'
+  && __SMART_DALA_CAMERA_RELAY_ENABLED__;
 
 const COPY = {
   uz: {
@@ -78,6 +80,8 @@ const COPY = {
     reconnect: 'Qayta ulanish',
     noCamera: 'Kamera manzili sozlanmagan',
     cameraHint: 'Kamera IP manzilini Sozlamalarda kiriting.',
+    cameraRelayUnavailable: 'Lokal kamera relesi mavjud emas',
+    cameraRelayHint: 'SMART_DALA_CAMERA_RTSP_URL ni sozlang, Vite-ni qayta ishga tushiring va ffmpeg hamda kamera ulanishini tekshiring.',
     aiCore: 'Agro AI',
     aiScan: 'AI skan',
     water: "Sug'orish",
@@ -178,6 +182,8 @@ const COPY = {
     reconnect: 'Переподключить',
     noCamera: 'Адрес камеры не настроен',
     cameraHint: 'Укажите IP камеры в настройках.',
+    cameraRelayUnavailable: 'Локальный ретранслятор камеры недоступен',
+    cameraRelayHint: 'Настройте SMART_DALA_CAMERA_RTSP_URL, перезапустите Vite и проверьте ffmpeg и соединение с камерой.',
     aiCore: 'Агро AI',
     aiScan: 'AI скан',
     water: 'Полив',
@@ -278,6 +284,8 @@ const COPY = {
     reconnect: 'Reconnect',
     noCamera: 'Camera address is not configured',
     cameraHint: 'Enter the camera address in Settings.',
+    cameraRelayUnavailable: 'Local camera relay is unavailable',
+    cameraRelayHint: 'Set SMART_DALA_CAMERA_RTSP_URL, restart Vite, then verify ffmpeg and the camera connection.',
     aiCore: 'Agro AI',
     aiScan: 'AI scan',
     water: 'Water',
@@ -430,6 +438,12 @@ function deviceUrl(address, path = '/') {
 }
 
 function cameraUrl(address, cacheBuster) {
+  // Vite's server-side relay converts RTSP to a browser-compatible MJPEG feed.
+  // The RTSP value remains private in SMART_DALA_CAMERA_RTSP_URL.
+  if (CAMERA_RELAY_ENABLED) {
+    return '/camera.mjpg' + (cacheBuster ? '?refresh=' + encodeURIComponent(cacheBuster) : '');
+  }
+
   const entered = String(address || '').trim().replace(/\/+$/, '');
   if (!entered) {
     return '';
@@ -810,6 +824,9 @@ function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) 
   const [cameraRefresh, setCameraRefresh] = useState(0);
   const [cameraFailed, setCameraFailed] = useState(false);
   const stream = cameraUrl(cameraAddress, cameraRefresh);
+  const usingLocalRelay = CAMERA_RELAY_ENABLED;
+  const emptyCameraTitle = usingLocalRelay ? copy.cameraRelayUnavailable : copy.noCamera;
+  const emptyCameraHint = usingLocalRelay ? copy.cameraRelayHint : copy.cameraHint;
   const soil = soilPercent(sensors);
   const hasSensors = Boolean(sensors);
 
@@ -882,8 +899,8 @@ function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) 
             ) : (
               <div className="camera-empty">
                 <Video size={48} />
-                <strong>{copy.noCamera}</strong>
-                <span>{copy.cameraHint}</span>
+                <strong>{emptyCameraTitle}</strong>
+                <span>{emptyCameraHint}</span>
               </div>
             )}
             <div className="camera-overlay">
@@ -899,8 +916,8 @@ function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) 
             </div>
           </div>
           <div className="camera-meta">
-            <span>IP: {cameraAddress || '—'}</span>
-            <span>MJPEG · 30 FPS</span>
+            <span>{usingLocalRelay ? 'LAN relay' : `IP: ${cameraAddress || '—'}`}</span>
+            <span>MJPEG · 8 FPS</span>
           </div>
         </article>
 
@@ -947,7 +964,9 @@ function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) 
           <h2>{copy.telemetry}</h2>
         </div>
         <div className="sensor-grid">
-          {telemetry.map((item) => <SensorCard key={item.key} {...item} />)}
+          {telemetry.map(({ key: sensorKey, ...sensor }) => (
+            <SensorCard key={sensorKey} {...sensor} />
+          ))}
         </div>
       </div>
 

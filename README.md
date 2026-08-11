@@ -17,6 +17,25 @@ npm run dev
 For the AI function locally, use `npm run dev:netlify` instead. Copy
 `.env.example` to `.env` only on your machine, then add a provider key there.
 
+### RTSP camera on a trusted LAN (development only)
+
+Browsers cannot render an `rtsp://` camera address directly. This project uses
+the locally installed `ffmpeg` executable to convert a private RTSP feed into
+MJPEG at the same origin as the Vite app. Create an ignored `.env.local` file
+or set a shell environment variable before starting Vite:
+
+```dotenv
+SMART_DALA_CAMERA_RTSP_URL=rtsp://username:password@camera-host:554/path
+```
+
+Then run `npm run dev` and open `http://<computer-LAN-IP>:5173` from each
+trusted device on the same network. The browser requests `/camera.mjpg`; the
+RTSP address and its credentials stay in the server process and are never sent
+to the browser. Restart Vite after changing the setting. If the camera panel is
+blank, verify `ffmpeg` is available on the computer running Vite and that the
+computer can reach the camera. This relay is deliberately development-only and
+has no authentication, so do not expose it outside a trusted LAN.
+
 ## Deploy to Netlify
 
 Netlify reads `netlify.toml`; use `npm run build` and publish `dist`. In the
