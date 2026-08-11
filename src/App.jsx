@@ -78,6 +78,20 @@ const COPY = {
     lost: "Yo'qolgan",
     cameraFeed: 'Jonli kamera',
     reconnect: 'Qayta ulanish',
+    useDeviceCamera: 'Qurilma kamerasini ochish',
+    useIpCamera: 'IP kamerani ochish',
+    deviceCamera: 'Qurilma kamerasi',
+    lanRelay: 'LAN relesi',
+    localCameraMeta: 'Mahalliy video oqimi',
+    localCameraTag: 'QURILMA',
+    startingDeviceCamera: 'Qurilma kamerasi ulanmoqda…',
+    deviceCameraStartingHint: 'Kamera ruxsatini tasdiqlang. Telefonda orqa kamera afzal tanlanadi.',
+    deviceCameraUnsupported: 'Bu brauzer kameraga kira olmaydi',
+    deviceCameraPermission: 'Kamera ruxsati yoki HTTPS kerak',
+    deviceCameraNotFound: 'Bu qurilmada kamera topilmadi',
+    deviceCameraInUse: 'Kamera boshqa ilova tomonidan band',
+    deviceCameraError: 'Qurilma kamerasini ochib bo‘lmadi',
+    deviceCameraFallbackHint: 'Brauzerda kamera ruxsatini bering yoki IP kamera tugmasini bosing. LAN manzilida odatda HTTPS talab qilinadi.',
     noCamera: 'Kamera manzili sozlanmagan',
     cameraHint: 'Kamera IP manzilini Sozlamalarda kiriting.',
     cameraRelayUnavailable: 'Lokal kamera relesi mavjud emas',
@@ -180,6 +194,20 @@ const COPY = {
     lost: 'Нет связи',
     cameraFeed: 'Камера',
     reconnect: 'Переподключить',
+    useDeviceCamera: 'Открыть камеру устройства',
+    useIpCamera: 'Открыть IP-камеру',
+    deviceCamera: 'Камера устройства',
+    lanRelay: 'LAN-ретранслятор',
+    localCameraMeta: 'Локальный видеопоток',
+    localCameraTag: 'УСТРОЙСТВО',
+    startingDeviceCamera: 'Подключение камеры устройства…',
+    deviceCameraStartingHint: 'Подтвердите разрешение на камеру. На телефоне предпочтительна задняя камера.',
+    deviceCameraUnsupported: 'Этот браузер не поддерживает доступ к камере',
+    deviceCameraPermission: 'Нужно разрешение на камеру или HTTPS',
+    deviceCameraNotFound: 'Камера на этом устройстве не найдена',
+    deviceCameraInUse: 'Камера занята другим приложением',
+    deviceCameraError: 'Не удалось открыть камеру устройства',
+    deviceCameraFallbackHint: 'Разрешите доступ к камере в браузере или нажмите кнопку IP-камеры. Для LAN-адреса обычно требуется HTTPS.',
     noCamera: 'Адрес камеры не настроен',
     cameraHint: 'Укажите IP камеры в настройках.',
     cameraRelayUnavailable: 'Локальный ретранслятор камеры недоступен',
@@ -282,6 +310,20 @@ const COPY = {
     lost: 'Lost',
     cameraFeed: 'Live camera',
     reconnect: 'Reconnect',
+    useDeviceCamera: 'Use device camera',
+    useIpCamera: 'Use IP camera',
+    deviceCamera: 'Device camera',
+    lanRelay: 'LAN relay',
+    localCameraMeta: 'Local video stream',
+    localCameraTag: 'DEVICE',
+    startingDeviceCamera: 'Connecting to this device’s camera…',
+    deviceCameraStartingHint: 'Approve the camera request. Phones prefer the rear-facing camera.',
+    deviceCameraUnsupported: 'This browser cannot access a camera',
+    deviceCameraPermission: 'Camera permission or HTTPS is required',
+    deviceCameraNotFound: 'No camera was found on this device',
+    deviceCameraInUse: 'The camera is being used by another app',
+    deviceCameraError: 'The device camera could not be opened',
+    deviceCameraFallbackHint: 'Allow camera access in your browser or choose the IP camera button. A LAN address normally requires HTTPS.',
     noCamera: 'Camera address is not configured',
     cameraHint: 'Enter the camera address in Settings.',
     cameraRelayUnavailable: 'Local camera relay is unavailable',
@@ -459,6 +501,32 @@ function cameraUrl(address, cacheBuster) {
     return url.toString();
   } catch {
     return '';
+  }
+}
+
+function stopMediaStream(stream) {
+  stream?.getTracks?.().forEach((track) => {
+    try {
+      track.stop();
+    } catch {
+      // A stopped or disconnected track does not need further handling.
+    }
+  });
+}
+
+function localCameraErrorKey(error) {
+  switch (error?.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'deviceCameraPermission';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'deviceCameraNotFound';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'deviceCameraInUse';
+    default:
+      return 'deviceCameraError';
   }
 }
 
@@ -821,8 +889,16 @@ function StatusBadge({ connected, copy, compact = false }) {
 }
 
 function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) {
+  const [cameraSource, setCameraSource] = useState('device');
   const [cameraRefresh, setCameraRefresh] = useState(0);
   const [cameraFailed, setCameraFailed] = useState(false);
+  const [deviceCameraAttempt, setDeviceCameraAttempt] = useState(0);
+  const [deviceCameraState, setDeviceCameraState] = useState('idle');
+  const [deviceCameraError, setDeviceCameraError] = useState('');
+  const deviceVideo = useRef(null);
+  const deviceStream = useRef(null);
+  const deviceCameraRequest = useRef(0);
+  const usingDeviceCamera = cameraSource === 'device';
   const stream = cameraUrl(cameraAddress, cameraRefresh);
   const usingLocalRelay = CAMERA_RELAY_ENABLED;
   const emptyCameraTitle = usingLocalRelay ? copy.cameraRelayUnavailable : copy.noCamera;
@@ -830,9 +906,121 @@ function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) 
   const soil = soilPercent(sensors);
   const hasSensors = Boolean(sensors);
 
+  const stopDeviceCamera = useCallback(() => {
+    deviceCameraRequest.current += 1;
+    stopMediaStream(deviceStream.current);
+    deviceStream.current = null;
+
+    if (deviceVideo.current) {
+      deviceVideo.current.srcObject = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!usingDeviceCamera) {
+      stopDeviceCamera();
+      return undefined;
+    }
+
+    const requestId = ++deviceCameraRequest.current;
+    let disposed = false;
+    setDeviceCameraState('starting');
+    setDeviceCameraError('');
+
+    const isCurrentRequest = () => !disposed && requestId === deviceCameraRequest.current;
+
+    const startDeviceCamera = async () => {
+      if (!globalThis.isSecureContext) {
+        if (isCurrentRequest()) {
+          setDeviceCameraState('error');
+          setDeviceCameraError('deviceCameraPermission');
+        }
+        return;
+      }
+
+      const mediaDevices = globalThis.navigator?.mediaDevices;
+      if (!mediaDevices?.getUserMedia) {
+        if (isCurrentRequest()) {
+          setDeviceCameraState('error');
+          setDeviceCameraError('deviceCameraUnsupported');
+        }
+        return;
+      }
+
+      try {
+        const media = await mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+
+        if (!isCurrentRequest()) {
+          stopMediaStream(media);
+          return;
+        }
+
+        const video = deviceVideo.current;
+        if (!video) {
+          stopMediaStream(media);
+          return;
+        }
+
+        deviceStream.current = media;
+        video.srcObject = media;
+
+        const handleTrackEnded = () => {
+          if (deviceStream.current !== media || !isCurrentRequest()) return;
+          deviceStream.current = null;
+          if (deviceVideo.current?.srcObject === media) {
+            deviceVideo.current.srcObject = null;
+          }
+          setDeviceCameraState('error');
+          setDeviceCameraError('deviceCameraError');
+        };
+        media.getTracks().forEach((track) => track.addEventListener('ended', handleTrackEnded, { once: true }));
+
+        await video.play();
+        if (isCurrentRequest() && deviceStream.current === media) {
+          setDeviceCameraState('ready');
+        }
+      } catch (error) {
+        if (!isCurrentRequest()) return;
+        stopMediaStream(deviceStream.current);
+        deviceStream.current = null;
+        if (deviceVideo.current) {
+          deviceVideo.current.srcObject = null;
+        }
+        setDeviceCameraState('error');
+        setDeviceCameraError(localCameraErrorKey(error));
+      }
+    };
+
+    void startDeviceCamera();
+
+    return () => {
+      disposed = true;
+      if (requestId === deviceCameraRequest.current) {
+        stopDeviceCamera();
+      }
+    };
+  }, [deviceCameraAttempt, stopDeviceCamera, usingDeviceCamera]);
+
   useEffect(() => {
     setCameraFailed(false);
   }, [cameraAddress, cameraRefresh]);
+
+  const toggleCameraSource = useCallback(() => {
+    setCameraSource((source) => (source === 'device' ? 'ip' : 'device'));
+  }, []);
+
+  const reconnectCamera = useCallback(() => {
+    if (usingDeviceCamera) {
+      setDeviceCameraAttempt((attempt) => attempt + 1);
+      return;
+    }
+    setCameraRefresh(Date.now());
+  }, [usingDeviceCamera]);
+
+  const deviceCameraMessage = deviceCameraError ? copy[deviceCameraError] : '';
 
   const telemetry = [
     {
@@ -890,7 +1078,25 @@ function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) 
       <div className="monitor-grid">
         <article className="camera-card">
           <div className="camera-frame">
-            {stream && !cameraFailed ? (
+            {usingDeviceCamera ? (
+              <>
+                <video
+                  ref={deviceVideo}
+                  className={cx('camera-device-video', deviceCameraState !== 'ready' && 'is-pending')}
+                  autoPlay
+                  muted
+                  playsInline
+                  aria-label={copy.deviceCamera}
+                />
+                {deviceCameraState !== 'ready' && (
+                  <div className="camera-empty" role={deviceCameraState === 'error' ? 'alert' : undefined} aria-live="polite">
+                    <Camera size={48} />
+                    <strong>{deviceCameraState === 'starting' ? copy.startingDeviceCamera : deviceCameraMessage}</strong>
+                    <span>{deviceCameraState === 'starting' ? copy.deviceCameraStartingHint : copy.deviceCameraFallbackHint}</span>
+                  </div>
+                )}
+              </>
+            ) : stream && !cameraFailed ? (
               <img
                 src={stream}
                 alt={copy.cameraFeed}
@@ -906,18 +1112,31 @@ function MonitorPage({ copy, sensors, connected, cameraAddress, onPageChange }) 
             <div className="camera-overlay">
               <div className="camera-live">
                 <i />
-                <span>Live</span>
-                <b>CAM_01</b>
+                <span>{copy.live}</span>
+                <b>{usingDeviceCamera ? copy.localCameraTag : 'CAM_01'}</b>
               </div>
-              <button type="button" onClick={() => setCameraRefresh(Date.now())}>
-                <RefreshCw size={15} />
-                <span>{copy.reconnect}</span>
-              </button>
+              <div className="camera-controls">
+                <button
+                  type="button"
+                  className="camera-source-toggle"
+                  onClick={toggleCameraSource}
+                  aria-label={usingDeviceCamera ? copy.useIpCamera : copy.useDeviceCamera}
+                  aria-pressed={!usingDeviceCamera}
+                  title={usingDeviceCamera ? copy.useIpCamera : copy.useDeviceCamera}
+                >
+                  {usingDeviceCamera ? <Video size={15} /> : <Camera size={15} />}
+                  <span>{usingDeviceCamera ? copy.useIpCamera : copy.useDeviceCamera}</span>
+                </button>
+                <button type="button" onClick={reconnectCamera} title={copy.reconnect}>
+                  <RefreshCw size={15} />
+                  <span>{copy.reconnect}</span>
+                </button>
+              </div>
             </div>
           </div>
           <div className="camera-meta">
-            <span>{usingLocalRelay ? 'LAN relay' : `IP: ${cameraAddress || '—'}`}</span>
-            <span>MJPEG · 8 FPS</span>
+            <span>{usingDeviceCamera ? copy.deviceCamera : usingLocalRelay ? copy.lanRelay : `IP: ${cameraAddress || '—'}`}</span>
+            <span>{usingDeviceCamera ? copy.localCameraMeta : 'MJPEG · 8 FPS'}</span>
           </div>
         </article>
 
